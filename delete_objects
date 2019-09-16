@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+
+import boto3
+import uuid
+import argparse
+
+def assumed_role_session(role_arn):
+    sts_client = boto3.client('sts')
+
+    assumed_role_object=sts_client.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName=uuid.uuid1().hex
+    )
+    
+    credentials=assumed_role_object['Credentials']
+    
+    session = boto3.Session(
+        aws_access_key_id=credentials['AccessKeyId'],
+        aws_secret_access_key=credentials['SecretAccessKey'],
+        aws_session_token=credentials['SessionToken']
+    )
+    
+    return session
+
+def create_client(service_name, role_arn):
+    session = assumed_role_session(role_arn)
+    return session.client(service_name)
+
+def get_keys_for_prefix(client, bucket_name, prefix):
+    response = client.list_objects_v2(
+        Bucket=bucket_name,
+        Prefix=prefix,
+        MaxKeys=1000
+    )
+    
+    
+    s3_objects = []
+    if(response['KeyCount'] >= 1):
+        s3_objects = [s3_object['Key'] for s3_object in response['Contents']]
+    
+    
+    keys = {
+        'objects': s3_objects,
+        'more_results': response['IsTruncated']
+    }
+    
+    return keys
+
+def delete_objects(client, bucket_name, prefix):
+    some_results = get_keys_for_prefix(client, bucket_name, prefix)
+
+    deleted_count = 0
+    while(some_results['more_results']):
+        delete_objects = [{ 'Key': key } for key in some_results['objects']]
+        
+        if(len(delete_objects) >= 1):
+            start_key = delete_objects[0]['Key'].split('/')[-1]
+            end_key = delete_objects[-1]['Key'].split('/')[-1]
+
+            print(f"Deleting {delete_objects[0]['Key'].split('/')[-1]} - {delete_objects[-1]['Key']}")
+        
+        response = client.delete_objects(
+            Bucket=bucket_name,
+            Delete={ 'Objects': delete_objects }
+        )
+        
+        deleted_count += len(response['Deleted'])
+        
+        print(f"Deleted {deleted_count} objects")
+        
+        some_results = get_keys_for_prefix(client, bucket_name, prefix)
+        
+def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("bucket", help="Bucket to delete from", type=str)
+    parser.add_argument("prefix", help="Prefix to delete from", type=str)
+    parser.add_argument("role_arn", help="Role ARN to run as", type=str)
+
+    args = parser.parse_args()
+
+    client = create_client('s3', args.role_arn)
+        
+    delete_objects(client, args.bucket, args.prefix)
+    
+if __name__ == "__main__":
+    main()

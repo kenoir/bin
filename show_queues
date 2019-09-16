@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+
+import datetime
+import uuid
+
+import argparse
+import asciiplotlib as apl
+import botocore
+import boto3
+
+
+def assumed_role_session(role_arn):
+    sts_client = boto3.client('sts')
+
+    assumed_role_object=sts_client.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName=uuid.uuid1().hex
+    )
+    
+    credentials=assumed_role_object['Credentials']
+    
+    session = boto3.Session(
+        aws_access_key_id=credentials['AccessKeyId'],
+        aws_secret_access_key=credentials['SecretAccessKey'],
+        aws_session_token=credentials['SessionToken']
+    )
+    
+    return session
+
+def create_client(service_name, role_arn):
+    session = assumed_role_session(role_arn)
+    return session.client(service_name)
+
+# ---
+
+def get_queues(client, filter_string):
+    queues = client.list_queues()
+
+    return [url for url in queues['QueueUrls'] if filter_string in url] 
+
+def get_queue_attribute(client, url, attribute_name):
+    response = client.get_queue_attributes(
+        QueueUrl=url, 
+        AttributeNames=[attribute_name]
+    )
+    
+    return response['Attributes'][attribute_name]
+    
+def get_queue_length(client, url):
+    not_visible = int(get_queue_attribute(client, url, 'ApproximateNumberOfMessagesNotVisible')) 
+    visible = int(get_queue_attribute(client, url, 'ApproximateNumberOfMessages'))
+
+    return not_visible + visible
+    
+def get_queue_name(url):
+    return url.split('/')[-1]
+
+def get_queue_lengths(client, filter_string):
+    queue_urls = get_queues(client, filter_string)
+    
+    return dict(
+        [[get_queue_name(url), get_queue_length(client, url)] for url in queue_urls]
+    )
+
+def show_queue_lengths(client, filter_string):
+    queue_lengths = get_queue_lengths(client, filter_string)
+    
+    fig = apl.figure()
+    
+    fig.barh(
+        list(queue_lengths.values()),
+        list(queue_lengths.keys()),
+        force_ascii=True
+    )
+    
+    fig.show()
+
+def main():
+    parser = argparse.ArgumentParser()
+    
+    parser.add_argument("filter", help="Filter queue names by string", type=str)
+    parser.add_argument("role_arn", help="Role ARN to run as", type=str)
+
+    args = parser.parse_args()
+
+    client = create_client('sqs', args.role_arn)
+
+    show_queue_lengths(client, args.filter)
+
+if __name__ == "__main__":
+    main()
